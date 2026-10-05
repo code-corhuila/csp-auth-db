@@ -6,8 +6,9 @@ GRANT SELECT ON auth.app_user, auth.role, auth.user_role, auth.refresh_token,
                 auth.email_verification, auth.password_reset TO auth_reader;
 GRANT INSERT, UPDATE ON auth.app_user, auth.user_role, auth.refresh_token,
                         auth.email_verification, auth.password_reset TO auth_writer;
--- The API appends events; it never reads them back. The worker may only read them (ADR-019).
-GRANT INSERT ON auth.outbox_event TO auth_writer;
+-- The API appends events and purges the ones older than 30 days (POST /internal/maintenance/purge,
+-- ADR-019); it never reads them back. The worker may only read them.
+GRANT INSERT, DELETE ON auth.outbox_event TO auth_writer;
 GRANT SELECT ON auth.outbox_event TO auth_outbox_reader;
 
 -- The login users already exist: csp-infra-postgres creates them before the migrations run (Annex J.5.5).
