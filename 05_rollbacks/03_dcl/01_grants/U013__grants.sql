@@ -2,7 +2,7 @@
 REVOKE auth_outbox_reader FROM worker_app;
 REVOKE auth_writer FROM auth_app;
 REVOKE SELECT ON auth.outbox_event FROM auth_outbox_reader;
-REVOKE INSERT ON auth.outbox_event FROM auth_writer;
+REVOKE INSERT, DELETE ON auth.outbox_event FROM auth_writer;
 REVOKE INSERT, UPDATE ON auth.app_user, auth.user_role, auth.refresh_token,
                          auth.email_verification, auth.password_reset FROM auth_writer;
 REVOKE SELECT ON auth.app_user, auth.role, auth.user_role, auth.refresh_token,
