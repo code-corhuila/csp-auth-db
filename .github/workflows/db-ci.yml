@@ -57,6 +57,9 @@ jobs:
           test "$(sql -tAc "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public'")" = 0             || { echo "objects found in public"; exit 1; }
           test "$(sql -tAc "select count(*) from pg_constraint c where c.contype = 'f' and not exists (select 1 from pg_index i where i.indrelid = c.conrelid and (i.indkey::int2[])[0:array_length(c.conkey, 1) - 1] = c.conkey and i.indpred is null)")" = 0             || { echo "a foreign key has no index"; exit 1; }
 
+          # Behaviour of the schema: seed, roles, grants and constraints (.github/db-tests).
+          sql -q -f .github/db-tests/auth_schema_test.sql
+
           # Flyway Community does not undo. The rollback of each V<n> is U<n> in
           # 05_rollbacks/, applied here from the highest version down. The control
           # table lives in the schema (Annex J.6) and is dropped before U001.
