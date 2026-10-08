@@ -44,6 +44,11 @@ SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.outbox
 SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.app_user', 'SELECT'), 'grants: auth_outbox_reader sees only the outbox');
 SELECT pg_temp.expect(pg_has_role('worker_app', 'auth_outbox_reader', 'MEMBER') AND NOT pg_has_role('worker_app', 'auth_writer', 'MEMBER'), 'grants: worker_app is member of the outbox reader only');
 SELECT pg_temp.expect(pg_has_role('auth_app', 'auth_writer', 'MEMBER'), 'grants: auth_app is member of auth_writer');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.idempotency_key', 'SELECT') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'INSERT'), 'grants: auth_writer reads and inserts idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE') AND NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'DELETE'), 'grants: auth_writer cannot update or delete idempotency_key');
+SELECT pg_temp.expect(has_table_privilege('auth_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_reader reads idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'INSERT, UPDATE, DELETE'), 'grants: auth_reader cannot write idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_outbox_reader cannot read idempotency_key');
 
 -- Constraints and indexes
 BEGIN;
@@ -81,5 +86,23 @@ SELECT pg_temp.rejects($$INSERT INTO auth.outbox_event (id, aggregate_type, aggr
 DELETE FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000002';
 SELECT pg_temp.expect((SELECT count(*) FROM auth.user_role WHERE user_id = '00000000-0000-0000-0000-000000000002') = 0, 'app_user: deleting a user removes its roles');
 SELECT pg_temp.expect((SELECT count(*) FROM auth.refresh_token WHERE user_id = '00000000-0000-0000-0000-000000000002') = 0, 'app_user: deleting a user removes its refresh tokens');
+
+-- idempotency_key (V015 to V018)
+SELECT pg_temp.expect((SELECT count(*) FROM pg_constraint WHERE conrelid = 'auth.idempotency_key'::regclass AND conname IN ('pk_idempotency_key', 'chk_idempotency_key_key_length', 'chk_idempotency_key_request_hash_length')) = 3, 'idempotency_key: primary key and the two checks exist with their names');
+SELECT pg_temp.expect((SELECT confdeltype FROM pg_constraint WHERE conname = 'fk_idempotency_key_app_user' AND conrelid = 'auth.idempotency_key'::regclass) = 'c', 'idempotency_key: the foreign key to app_user cascades on delete');
+SELECT pg_temp.expect((SELECT indisunique AND indpred IS NULL FROM pg_index WHERE indexrelid = 'auth.uk_idempotency_key_user_id'::regclass), 'idempotency_key: uk_idempotency_key_user_id is unique and complete');
+
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000003', 'eva@example.com', 'Eva', 'h');
+INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-12345678', '00000000-0000-0000-0000-000000000003', 'hash-1');
+SELECT pg_temp.expect((SELECT created_at IS NOT NULL FROM auth.idempotency_key WHERE key = 'key-12345678'), 'idempotency_key: created_at is filled by default');
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000004', 'noa@example.com', 'Noa', 'h');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-12345678', '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a duplicate key is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES (repeat('k', 7), '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a key of 7 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES (repeat('k', 129), '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a key of 129 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-000000000004', '')$$, 'idempotency_key: an empty request hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-000000000003', 'hash-2')$$, 'idempotency_key: a second key for the same user is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-0000000000ff', 'hash-2')$$, 'idempotency_key: an unknown user is rejected');
+DELETE FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000003';
+SELECT pg_temp.expect((SELECT count(*) FROM auth.idempotency_key WHERE user_id = '00000000-0000-0000-0000-000000000003') = 0, 'app_user: deleting a user removes its idempotency key');
 
 ROLLBACK;
