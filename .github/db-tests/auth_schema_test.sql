@@ -45,10 +45,20 @@ SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.app_us
 SELECT pg_temp.expect(pg_has_role('worker_app', 'auth_outbox_reader', 'MEMBER') AND NOT pg_has_role('worker_app', 'auth_writer', 'MEMBER'), 'grants: worker_app is member of the outbox reader only');
 SELECT pg_temp.expect(pg_has_role('auth_app', 'auth_writer', 'MEMBER'), 'grants: auth_app is member of auth_writer');
 SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.idempotency_key', 'SELECT') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'INSERT'), 'grants: auth_writer reads and inserts idempotency_key');
-SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE') AND NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'DELETE'), 'grants: auth_writer cannot update or delete idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE'), 'grants: auth_writer cannot update idempotency_key');
 SELECT pg_temp.expect(has_table_privilege('auth_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_reader reads idempotency_key');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'INSERT, UPDATE, DELETE'), 'grants: auth_reader cannot write idempotency_key');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_outbox_reader cannot read idempotency_key');
+
+-- Purge grants (V019): only DELETE on the two tables, the WHERE reads through auth_reader
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.refresh_token', 'DELETE') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'DELETE'), 'grants: auth_writer purges refresh_token and idempotency_key');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.refresh_token', 'expires_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.refresh_token', 'revoked_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.idempotency_key', 'created_at', 'SELECT'), 'grants: auth_writer reads the columns the purge filters on');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.refresh_token', 'TRUNCATE, REFERENCES, TRIGGER') AND NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE, TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.email_verification', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.password_reset', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete the other tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.role', 'INSERT, UPDATE, DELETE'), 'grants: auth_writer cannot write role');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.refresh_token', 'DELETE') AND NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_reader cannot delete the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_outbox_reader cannot touch the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('worker_app', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.idempotency_key', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.outbox_event', 'INSERT, UPDATE, DELETE'), 'grants: worker_app stays read-only on the outbox and sees nothing else');
 
 -- Constraints and indexes
 BEGIN;
