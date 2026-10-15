@@ -6,6 +6,8 @@ Applied migrations are frozen: a change of the schema is always a new version.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-15
+
 Everything below is in `develop`; it is promoted to `qa` and `main` only when it is ordered.
 
 ### Added
