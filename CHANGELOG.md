@@ -12,6 +12,10 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migration V023 and its rollback U023: `idx_app_user_email_pattern`, a partial `text_pattern_ops` index on `auth.app_user (email)`
+  built `CONCURRENTLY` in its own migration, so `GET /users` can answer `email LIKE 'prefix%'` without scanning the table. CI checks
+  that it exists, is valid and is partial.
+  ([#31](https://github.com/code-corhuila/csp-auth-db/issues/31))
 - Migrations V020 to V022 and their rollbacks U020 to U022: indexes for the retention purge (ADR-030), each built `CONCURRENTLY` in
   its own migration: `idx_refresh_token_revoked_at` (partial, revoked rows), `idx_refresh_token_expires_at_complete` (complete;
   the V010 index is partial and cannot serve a revoked row that also expired) and `idx_idempotency_key_created_at`. CI checks
