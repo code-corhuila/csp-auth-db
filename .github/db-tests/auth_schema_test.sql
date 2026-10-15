@@ -115,4 +115,10 @@ SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request
 DELETE FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000003';
 SELECT pg_temp.expect((SELECT count(*) FROM auth.idempotency_key WHERE user_id = '00000000-0000-0000-0000-000000000003') = 0, 'app_user: deleting a user removes its idempotency key');
 
+-- Indexes of the retention purge (V020 to V022, ADR-030): the OR of the refresh token purge needs one complete index per branch
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_refresh_token_revoked_at')), 'refresh_token: idx_refresh_token_revoked_at exists, is valid and covers only revoked rows');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_refresh_token_expires_at_complete')), 'refresh_token: idx_refresh_token_expires_at_complete exists, is valid and complete');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_idempotency_key_created_at')), 'idempotency_key: idx_idempotency_key_created_at exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid IN ('auth.refresh_token'::regclass, 'auth.idempotency_key'::regclass)) = 0, 'refresh_token, idempotency_key: no index is left invalid');
+
 ROLLBACK;
