@@ -10,6 +10,15 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V020 to V022 and their rollbacks U020 to U022: indexes for the retention purge (ADR-030), each built `CONCURRENTLY` in
+  its own migration: `idx_refresh_token_revoked_at` (partial, revoked rows), `idx_refresh_token_expires_at_complete` (complete;
+  the V010 index is partial and cannot serve a revoked row that also expired) and `idx_idempotency_key_created_at`. CI checks
+  that they exist, are valid and have the expected shape.
+  ([#18](https://github.com/code-corhuila/csp-auth-db/issues/18))
+- Migration V019 and its rollback U019: `DELETE` for `auth_writer` on `auth.refresh_token` and `auth.idempotency_key`, for the
+  retention purge (ADR-030). The `WHERE` reads through the `SELECT` it already inherits; no other role or table changes. CI
+  checks that nothing else is deletable.
+  ([#26](https://github.com/code-corhuila/csp-auth-db/issues/26))
 - Migrations V015 to V018 and their rollbacks U015 to U018: table `auth.idempotency_key` (the key with which each account was
   registered, with the hash of the request), its foreign key to `app_user` with `ON DELETE CASCADE`, its unique full index and
   its grants (`auth_reader` reads, `auth_writer` inserts, nobody updates or deletes). CI checks for the constraints, the
