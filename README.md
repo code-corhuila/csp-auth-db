@@ -11,12 +11,12 @@ This repository is the **only owner of the `auth` schema** of the Cinesync Platf
 roles and migrations. `csp-auth-api` consumes the schema and never versions it. A migration of auth
 that lives anywhere else is a serious fault (Norma 5.2.1).
 
-The repository currently holds the **base scaffold only**: the layout, the schema, its seven tables, the seed of the
+The repository currently holds the **base scaffold only**: the layout, the schema, its eight tables, the seed of the
 roles `CLIENT` and `ADMIN`, the database roles and the rebuild verification. Functionality is added later, each change
 with its own migration and reversion.
 
 Tables (singular, schema `auth`): `app_user`, `role`, `user_role`, `refresh_token`, `email_verification`,
-`password_reset` and `outbox_event`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
+`password_reset`, `outbox_event` and `idempotency_key`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
 
 ## Stack
 
