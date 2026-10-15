@@ -121,4 +121,8 @@ SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i
 SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_idempotency_key_created_at')), 'idempotency_key: idx_idempotency_key_created_at exists, is valid and complete');
 SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid IN ('auth.refresh_token'::regclass, 'auth.idempotency_key'::regclass)) = 0, 'refresh_token, idempotency_key: no index is left invalid');
 
+
+-- Index of the user listing (V023, HU-AUTH-003): LIKE 'prefix%' on the email of active accounts.
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_app_user_email_pattern')), 'app_user: idx_app_user_email_pattern exists, is valid and partial');
+
 ROLLBACK;
