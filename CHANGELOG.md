@@ -10,6 +10,11 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V024 and V025 and their rollbacks U024 and U025: `auth.email_verification` gets `new_email` (the address being verified)
+  and `attempt_count` (wrong codes, 0 to 5) with named checks, and the partial unique index `uk_email_verification_user_id_pending`
+  (one active request per user, built `CONCURRENTLY` in its own migration), for the email change of HU-AUTH-004 (ADR-034). CI
+  checks the defaults, the checks, the second pending request and the index.
+  ([#35](https://github.com/code-corhuila/csp-auth-db/issues/35))
 - Migration V023 and its rollback U023: `idx_app_user_email_pattern`, a partial `text_pattern_ops` index on `auth.app_user (email)`
   built `CONCURRENTLY` in its own migration, so `GET /users` can answer `email LIKE 'prefix%'` without scanning the table. CI checks
   that it exists, is valid and is partial.
