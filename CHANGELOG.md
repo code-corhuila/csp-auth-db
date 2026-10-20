@@ -12,6 +12,11 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V026 and V027 and their rollbacks U026 and U027, for the retention purge of `auth.email_verification` (ADR-030,
+  ADR-034): `DELETE` for `auth_writer` on the table (the `WHERE` reads through the `SELECT` it already inherits; no other role or
+  table changes) and the complete index `idx_email_verification_expires_at_complete`, built `CONCURRENTLY` in its own migration
+  because the V010 index is partial on unverified rows and cannot serve a verified one. CI checks the grant, that auth_writer
+  deletes exactly four tables, and that the index exists, is valid and complete.
 - Migrations V024 and V025 and their rollbacks U024 and U025: `auth.email_verification` gets `new_email` (the address being verified)
   and `attempt_count` (wrong codes, 0 to 5) with named checks, and the partial unique index `uk_email_verification_user_id_pending`
   (one active request per user, built `CONCURRENTLY` in its own migration), for the email change of HU-AUTH-004 (ADR-034). CI
