@@ -54,11 +54,19 @@ SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.idempo
 SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.refresh_token', 'DELETE') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'DELETE'), 'grants: auth_writer purges refresh_token and idempotency_key');
 SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.refresh_token', 'expires_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.refresh_token', 'revoked_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.idempotency_key', 'created_at', 'SELECT'), 'grants: auth_writer reads the columns the purge filters on');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.refresh_token', 'TRUNCATE, REFERENCES, TRIGGER') AND NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE, TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on the purged tables');
-SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.email_verification', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.password_reset', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete the other tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.password_reset', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete the other tables');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.role', 'INSERT, UPDATE, DELETE'), 'grants: auth_writer cannot write role');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.refresh_token', 'DELETE') AND NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_reader cannot delete the purged tables');
 SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_outbox_reader cannot touch the purged tables');
 SELECT pg_temp.expect(NOT has_table_privilege('worker_app', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.idempotency_key', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.outbox_event', 'INSERT, UPDATE, DELETE'), 'grants: worker_app stays read-only on the outbox and sees nothing else');
+
+-- Purge grant of email verification codes (V026, ADR-034): only DELETE, the WHERE reads through auth_reader
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.email_verification', 'DELETE'), 'grants: auth_writer purges email_verification');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.email_verification', 'expires_at', 'SELECT') AND has_table_privilege('auth_writer', 'auth.email_verification', 'INSERT') AND has_table_privilege('auth_writer', 'auth.email_verification', 'UPDATE'), 'grants: auth_writer reads, inserts and updates email_verification as before');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.email_verification', 'TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on email_verification');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.email_verification', 'INSERT, UPDATE, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.email_verification', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.email_verification', 'SELECT, DELETE'), 'grants: no other role can write or delete email_verification');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.password_reset', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete user_role, password_reset or app_user');
+SELECT pg_temp.expect((SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'auth_writer' AND table_schema = 'auth' AND privilege_type = 'DELETE') = 4, 'grants: auth_writer can delete exactly four tables (outbox_event, refresh_token, idempotency_key, email_verification)');
 
 -- Constraints and indexes
 BEGIN;
@@ -141,5 +149,9 @@ UPDATE auth.email_verification SET verified_at = NOW() WHERE user_id = '00000000
 INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '222222', 'eva.third@example.com', NOW() + interval '15 minutes');
 SELECT pg_temp.expect((SELECT count(*) FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003' AND verified_at IS NULL AND deleted_at IS NULL) = 1, 'email_verification: a verified request does not hold the unique slot of the pending one');
 SELECT pg_temp.expect((SELECT i.indisvalid AND i.indisunique AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.uk_email_verification_user_id_pending')), 'email_verification: uk_email_verification_user_id_pending exists, is valid, unique and partial');
+
+-- Index of the email verification purge (V027, ADR-034): complete, so verified rows are served too.
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL AND NOT i.indisunique FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_email_verification_expires_at_complete')), 'email_verification: idx_email_verification_expires_at_complete exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid = 'auth.email_verification'::regclass) = 0, 'email_verification: no index is left invalid');
 
 ROLLBACK;
