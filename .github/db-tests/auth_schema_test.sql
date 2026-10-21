@@ -125,4 +125,21 @@ SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND in
 -- Index of the user listing (V023, HU-AUTH-003): LIKE 'prefix%' on the email of active accounts.
 SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_app_user_email_pattern')), 'app_user: idx_app_user_email_pattern exists, is valid and partial');
 
+-- Email change (V024, V025, HU-AUTH-004): pending address, attempt counter and one active request per user.
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000003', 'eva@example.com', 'Eva', 'h');
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '123456', 'eva.new@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT attempt_count FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003') = 0, 'email_verification: attempt_count starts at 0');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '654321', 'eva.other@example.com', NOW())$$, 'email_verification: a second pending request of the same user is rejected');
+UPDATE auth.email_verification SET deleted_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003';
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '654321', 'eva.other@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003') = 2, 'email_verification: a new request is allowed once the previous one is soft-deleted');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_verification (user_id, verification_code, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '111111', NOW())$$, 'email_verification: a request without the new email is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET attempt_count = 6 WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: more than 5 attempts is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET new_email = 'a' WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: a new email shorter than 3 characters is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET attempt_count = -1 WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: a negative attempt count is rejected');
+UPDATE auth.email_verification SET verified_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003' AND deleted_at IS NULL;
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '222222', 'eva.third@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003' AND verified_at IS NULL AND deleted_at IS NULL) = 1, 'email_verification: a verified request does not hold the unique slot of the pending one');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indisunique AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.uk_email_verification_user_id_pending')), 'email_verification: uk_email_verification_user_id_pending exists, is valid, unique and partial');
+
 ROLLBACK;
