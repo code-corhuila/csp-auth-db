@@ -12,6 +12,12 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V028 to V030 and their rollbacks U028 to U030, for the password reset of HU-AUTH-006: the partial unique index
+  `uk_password_reset_user_id_pending` (one active request per user: pending means `used_at` and `deleted_at` null, and a new request
+  soft-deletes the previous one, as in V025), `DELETE` for `auth_writer` on `auth.password_reset` for the retention purge (no other
+  role or table changes) and the complete index `idx_password_reset_expires_at_complete`, because the V010 index is partial on
+  unused rows and cannot serve a used one. The two indexes are built `CONCURRENTLY`, each in its own migration. CI checks the
+  grant, that auth_writer deletes exactly five tables, the second pending request and the indexes.
 - Migrations V026 and V027 and their rollbacks U026 and U027, for the retention purge of `auth.email_verification` (ADR-030,
   ADR-034): `DELETE` for `auth_writer` on the table (the `WHERE` reads through the `SELECT` it already inherits; no other role or
   table changes) and the complete index `idx_email_verification_expires_at_complete`, built `CONCURRENTLY` in its own migration
