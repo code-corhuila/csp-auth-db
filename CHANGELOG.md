@@ -10,6 +10,12 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V036 to V040 and their rollbacks U036 to U040, for the `Idempotency-Key` of `PATCH /me/email` (HU-AUTH-006, norm 5.3.8, ADR-034):
+  the table `auth.email_change_idempotency_key` (`key` primary key of 8 to 128 characters, `request_hash` of exactly 64 characters, `created_at`,
+  and a nullable `email_verification_id`, null once the purge deleted the pending request), its foreign key to `auth.email_verification` with
+  `ON DELETE SET NULL` so the purge of requests never fails, a complete index on that column, the purge index
+  `idx_email_change_idempotency_key_created_at` built `CONCURRENTLY` in its own migration, and the grants (`SELECT` for `auth_reader`, `INSERT`
+  and `DELETE` for `auth_writer`). CI checks the constraints, the indexes, the grants and that auth_writer deletes exactly seven tables.
 - Migrations V031 to V035 and their rollbacks U031 to U035, for the `Idempotency-Key` of `POST /forgot-password` (HU-AUTH-006, norm 5.3.8): the
   table `auth.password_reset_idempotency_key` (`key` primary key of 8 to 128 characters, `request_hash` of exactly 64 characters, `created_at`,
   and a nullable `password_reset_id`, null when the request created no token), its foreign key to `auth.password_reset` with `ON DELETE SET NULL`
