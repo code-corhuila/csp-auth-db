@@ -16,7 +16,7 @@ roles `CLIENT` and `ADMIN`, the database roles and the rebuild verification. Fun
 with its own migration and reversion.
 
 Tables (singular, schema `auth`): `app_user`, `role`, `user_role`, `refresh_token`, `email_verification`,
-`password_reset`, `outbox_event`, `idempotency_key` and `password_reset_idempotency_key`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
+`password_reset`, `outbox_event`, `idempotency_key`, `password_reset_idempotency_key` and `email_change_idempotency_key`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
 
 ## Stack
 
