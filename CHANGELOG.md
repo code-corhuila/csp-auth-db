@@ -10,6 +10,12 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V031 to V035 and their rollbacks U031 to U035, for the `Idempotency-Key` of `POST /forgot-password` (HU-AUTH-006, norm 5.3.8): the
+  table `auth.password_reset_idempotency_key` (`key` primary key of 8 to 128 characters, `request_hash` of exactly 64 characters, `created_at`,
+  and a nullable `password_reset_id`, null when the request created no token), its foreign key to `auth.password_reset` with `ON DELETE SET NULL`
+  so the purge of tokens never fails, a complete index on that column, the purge index `idx_password_reset_idempotency_key_created_at` built
+  `CONCURRENTLY` in its own migration, and the grants (`SELECT` for `auth_reader`, `INSERT` and `DELETE` for `auth_writer`). CI checks the
+  constraints, the indexes, the grants and that auth_writer deletes exactly six tables.
 - Migrations V028 to V030 and their rollbacks U028 to U030, for the password reset of HU-AUTH-006: the partial unique index
   `uk_password_reset_user_id_pending` (one active request per user: pending means `used_at` and `deleted_at` null, and a new request
   soft-deletes the previous one, as in V025), `DELETE` for `auth_writer` on `auth.password_reset` for the retention purge (no other
