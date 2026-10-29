@@ -1,0 +1,218 @@
+-- Behaviour tests of the auth schema. Run by db-ci.yml after the migrations, as the admin user.
+-- Every check raises an exception when it fails; data checks run inside a transaction that is rolled back.
+\set ON_ERROR_STOP on
+
+CREATE FUNCTION pg_temp.expect(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  IF ok IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAILED: %', label;
+  END IF;
+  RAISE NOTICE 'ok: %', label;
+END
+$$;
+
+CREATE FUNCTION pg_temp.rejects(statement text, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    EXECUTE statement;
+  EXCEPTION WHEN integrity_constraint_violation THEN
+    RAISE NOTICE 'ok: %', label;
+    RETURN;
+  END;
+  RAISE EXCEPTION 'FAILED: % (the statement was accepted)', label;
+END
+$$;
+
+-- Seed (V011)
+SELECT pg_temp.expect((SELECT count(*) FROM auth.role WHERE name IN ('CLIENT', 'ADMIN')) = 2, 'seed: roles CLIENT and ADMIN exist');
+
+-- Roles (V012): no role of the schema can log in
+SELECT pg_temp.expect(
+  (SELECT count(*) FROM pg_roles WHERE rolname IN ('auth_reader', 'auth_writer', 'auth_outbox_reader') AND NOT rolcanlogin) = 3,
+  'roles: the three schema roles are NOLOGIN');
+
+-- Grants (V013)
+SELECT pg_temp.expect(has_table_privilege('auth_reader', 'auth.app_user', 'SELECT'), 'grants: auth_reader reads app_user');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.app_user', 'INSERT, UPDATE, DELETE'), 'grants: auth_reader cannot write app_user');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.app_user', 'INSERT') AND has_table_privilege('auth_writer', 'auth.app_user', 'UPDATE'), 'grants: auth_writer inserts and updates app_user');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer cannot delete app_user');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.outbox_event', 'INSERT') AND has_table_privilege('auth_writer', 'auth.outbox_event', 'DELETE'), 'grants: auth_writer inserts and purges the outbox');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.outbox_event', 'id', 'SELECT') AND has_column_privilege('auth_writer', 'auth.outbox_event', 'created_at', 'SELECT'), 'grants: auth_writer reads id and created_at of the outbox');
+SELECT pg_temp.expect(NOT has_column_privilege('auth_writer', 'auth.outbox_event', 'payload', 'SELECT'), 'grants: auth_writer cannot read the outbox payload');
+SELECT pg_temp.expect(has_table_privilege('auth_outbox_reader', 'auth.outbox_event', 'SELECT'), 'grants: auth_outbox_reader reads the outbox');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.outbox_event', 'INSERT, UPDATE, DELETE'), 'grants: auth_outbox_reader cannot write the outbox');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.app_user', 'SELECT'), 'grants: auth_outbox_reader sees only the outbox');
+SELECT pg_temp.expect(pg_has_role('worker_app', 'auth_outbox_reader', 'MEMBER') AND NOT pg_has_role('worker_app', 'auth_writer', 'MEMBER'), 'grants: worker_app is member of the outbox reader only');
+SELECT pg_temp.expect(pg_has_role('auth_app', 'auth_writer', 'MEMBER'), 'grants: auth_app is member of auth_writer');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.idempotency_key', 'SELECT') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'INSERT'), 'grants: auth_writer reads and inserts idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE'), 'grants: auth_writer cannot update idempotency_key');
+SELECT pg_temp.expect(has_table_privilege('auth_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_reader reads idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'INSERT, UPDATE, DELETE'), 'grants: auth_reader cannot write idempotency_key');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'SELECT'), 'grants: auth_outbox_reader cannot read idempotency_key');
+
+-- Purge grants (V019): only DELETE on the two tables, the WHERE reads through auth_reader
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.refresh_token', 'DELETE') AND has_table_privilege('auth_writer', 'auth.idempotency_key', 'DELETE'), 'grants: auth_writer purges refresh_token and idempotency_key');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.refresh_token', 'expires_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.refresh_token', 'revoked_at', 'SELECT') AND has_column_privilege('auth_writer', 'auth.idempotency_key', 'created_at', 'SELECT'), 'grants: auth_writer reads the columns the purge filters on');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.refresh_token', 'TRUNCATE, REFERENCES, TRIGGER') AND NOT has_table_privilege('auth_writer', 'auth.idempotency_key', 'UPDATE, TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete the other tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.role', 'INSERT, UPDATE, DELETE'), 'grants: auth_writer cannot write role');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.refresh_token', 'DELETE') AND NOT has_table_privilege('auth_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_reader cannot delete the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_outbox_reader', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.idempotency_key', 'DELETE'), 'grants: auth_outbox_reader cannot touch the purged tables');
+SELECT pg_temp.expect(NOT has_table_privilege('worker_app', 'auth.refresh_token', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.idempotency_key', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.outbox_event', 'INSERT, UPDATE, DELETE'), 'grants: worker_app stays read-only on the outbox and sees nothing else');
+
+-- Purge grant of password reset tokens (V029, HU-AUTH-006): only DELETE, the WHERE reads through auth_reader
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.password_reset', 'DELETE'), 'grants: auth_writer purges password_reset');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.password_reset', 'expires_at', 'SELECT') AND has_table_privilege('auth_writer', 'auth.password_reset', 'INSERT') AND has_table_privilege('auth_writer', 'auth.password_reset', 'UPDATE'), 'grants: auth_writer reads, inserts and updates password_reset as before');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.password_reset', 'TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on password_reset');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.password_reset', 'INSERT, UPDATE, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.password_reset', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.password_reset', 'SELECT, DELETE'), 'grants: no other role can write or delete password_reset');
+
+-- Purge grant of email verification codes (V026, ADR-034): only DELETE, the WHERE reads through auth_reader
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.email_verification', 'DELETE'), 'grants: auth_writer purges email_verification');
+SELECT pg_temp.expect(has_column_privilege('auth_writer', 'auth.email_verification', 'expires_at', 'SELECT') AND has_table_privilege('auth_writer', 'auth.email_verification', 'INSERT') AND has_table_privilege('auth_writer', 'auth.email_verification', 'UPDATE'), 'grants: auth_writer reads, inserts and updates email_verification as before');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.email_verification', 'TRUNCATE, REFERENCES, TRIGGER'), 'grants: auth_writer has no other privilege on email_verification');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_reader', 'auth.email_verification', 'INSERT, UPDATE, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.email_verification', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.email_verification', 'SELECT, DELETE'), 'grants: no other role can write or delete email_verification');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.user_role', 'DELETE') AND NOT has_table_privilege('auth_writer', 'auth.app_user', 'DELETE'), 'grants: auth_writer still cannot delete user_role or app_user');
+SELECT pg_temp.expect((SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'auth_writer' AND table_schema = 'auth' AND privilege_type = 'DELETE') = 7, 'grants: auth_writer can delete exactly seven tables (outbox_event, refresh_token, idempotency_key, email_verification, password_reset, password_reset_idempotency_key, email_change_idempotency_key)');
+
+-- Constraints and indexes
+BEGIN;
+
+INSERT INTO auth.app_user (id, email, name, password_hash, phone, address)
+VALUES ('00000000-0000-0000-0000-000000000001', 'ana@example.com', 'Ana', 'hash', '+573001234567', 'Calle 1 # 2-3');
+
+SELECT pg_temp.expect((SELECT status FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000001') = 'ACTIVE', 'app_user: a new user is ACTIVE');
+SELECT pg_temp.expect((SELECT NOT email_verified FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000001'), 'app_user: email starts unverified');
+
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash, status) VALUES ('b@example.com', 'B', 'h', 'BANNED')$$, 'app_user: unknown status is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash) VALUES ('', 'B', 'h')$$, 'app_user: empty email is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash) VALUES ('c@example.com', repeat('n', 101), 'h')$$, 'app_user: name over 100 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash, phone) VALUES ('d@example.com', 'D', 'h', 'abc')$$, 'app_user: malformed phone is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash, phone) VALUES ('e@example.com', 'E', 'h', '123456')$$, 'app_user: phone with fewer than 7 digits is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash, address) VALUES ('f@example.com', 'F', 'h', '')$$, 'app_user: empty address is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.app_user (email, name, password_hash) VALUES ('ana@example.com', 'Other', 'h')$$, 'app_user: duplicate active email is rejected');
+
+UPDATE auth.app_user SET deleted_at = NOW() WHERE id = '00000000-0000-0000-0000-000000000001';
+INSERT INTO auth.app_user (email, name, password_hash) VALUES ('ana@example.com', 'Ana again', 'h');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.app_user WHERE email = 'ana@example.com') = 2, 'app_user: an email can be reused after the soft delete');
+
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000002', 'luis@example.com', 'Luis', 'h');
+INSERT INTO auth.user_role (user_id, role_id) SELECT '00000000-0000-0000-0000-000000000002', id FROM auth.role WHERE name = 'CLIENT';
+SELECT pg_temp.rejects($$INSERT INTO auth.user_role (user_id, role_id) SELECT '00000000-0000-0000-0000-000000000002', id FROM auth.role WHERE name = 'CLIENT'$$, 'user_role: the same role twice is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.user_role (user_id, role_id) SELECT '00000000-0000-0000-0000-0000000000ff', id FROM auth.role WHERE name = 'ADMIN'$$, 'user_role: an unknown user is rejected');
+SELECT pg_temp.rejects($$DELETE FROM auth.role WHERE name = 'CLIENT'$$, 'role: a role in use cannot be deleted');
+
+INSERT INTO auth.refresh_token (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000002', 'token-1', NOW() + interval '1 day');
+SELECT pg_temp.rejects($$INSERT INTO auth.refresh_token (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000002', 'token-1', NOW())$$, 'refresh_token: duplicate token hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_verification (user_id, verification_code, expires_at) VALUES ('00000000-0000-0000-0000-000000000002', '12345', NOW())$$, 'email_verification: a code of 5 digits is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000002', '', NOW())$$, 'password_reset: empty token hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.outbox_event (id, aggregate_type, aggregate_id, event_type, payload) VALUES (gen_random_uuid(), '', gen_random_uuid(), 'UserRegistered', '{}')$$, 'outbox_event: empty aggregate type is rejected');
+
+DELETE FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000002';
+SELECT pg_temp.expect((SELECT count(*) FROM auth.user_role WHERE user_id = '00000000-0000-0000-0000-000000000002') = 0, 'app_user: deleting a user removes its roles');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.refresh_token WHERE user_id = '00000000-0000-0000-0000-000000000002') = 0, 'app_user: deleting a user removes its refresh tokens');
+
+-- idempotency_key (V015 to V018)
+SELECT pg_temp.expect((SELECT count(*) FROM pg_constraint WHERE conrelid = 'auth.idempotency_key'::regclass AND conname IN ('pk_idempotency_key', 'chk_idempotency_key_key_length', 'chk_idempotency_key_request_hash_length')) = 3, 'idempotency_key: primary key and the two checks exist with their names');
+SELECT pg_temp.expect((SELECT confdeltype FROM pg_constraint WHERE conname = 'fk_idempotency_key_app_user' AND conrelid = 'auth.idempotency_key'::regclass) = 'c', 'idempotency_key: the foreign key to app_user cascades on delete');
+SELECT pg_temp.expect((SELECT indisunique AND indpred IS NULL FROM pg_index WHERE indexrelid = 'auth.uk_idempotency_key_user_id'::regclass), 'idempotency_key: uk_idempotency_key_user_id is unique and complete');
+
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000003', 'eva@example.com', 'Eva', 'h');
+INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-12345678', '00000000-0000-0000-0000-000000000003', 'hash-1');
+SELECT pg_temp.expect((SELECT created_at IS NOT NULL FROM auth.idempotency_key WHERE key = 'key-12345678'), 'idempotency_key: created_at is filled by default');
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000004', 'noa@example.com', 'Noa', 'h');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-12345678', '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a duplicate key is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES (repeat('k', 7), '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a key of 7 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES (repeat('k', 129), '00000000-0000-0000-0000-000000000004', 'hash-2')$$, 'idempotency_key: a key of 129 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-000000000004', '')$$, 'idempotency_key: an empty request hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-000000000003', 'hash-2')$$, 'idempotency_key: a second key for the same user is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.idempotency_key (key, user_id, request_hash) VALUES ('key-87654321', '00000000-0000-0000-0000-0000000000ff', 'hash-2')$$, 'idempotency_key: an unknown user is rejected');
+DELETE FROM auth.app_user WHERE id = '00000000-0000-0000-0000-000000000003';
+SELECT pg_temp.expect((SELECT count(*) FROM auth.idempotency_key WHERE user_id = '00000000-0000-0000-0000-000000000003') = 0, 'app_user: deleting a user removes its idempotency key');
+
+-- Indexes of the retention purge (V020 to V022, ADR-030): the OR of the refresh token purge needs one complete index per branch
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_refresh_token_revoked_at')), 'refresh_token: idx_refresh_token_revoked_at exists, is valid and covers only revoked rows');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_refresh_token_expires_at_complete')), 'refresh_token: idx_refresh_token_expires_at_complete exists, is valid and complete');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_idempotency_key_created_at')), 'idempotency_key: idx_idempotency_key_created_at exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid IN ('auth.refresh_token'::regclass, 'auth.idempotency_key'::regclass)) = 0, 'refresh_token, idempotency_key: no index is left invalid');
+
+
+-- Index of the user listing (V023, HU-AUTH-003): LIKE 'prefix%' on the email of active accounts.
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_app_user_email_pattern')), 'app_user: idx_app_user_email_pattern exists, is valid and partial');
+
+-- Email change (V024, V025, HU-AUTH-004): pending address, attempt counter and one active request per user.
+INSERT INTO auth.app_user (id, email, name, password_hash) VALUES ('00000000-0000-0000-0000-000000000003', 'eva@example.com', 'Eva', 'h');
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '123456', 'eva.new@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT attempt_count FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003') = 0, 'email_verification: attempt_count starts at 0');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '654321', 'eva.other@example.com', NOW())$$, 'email_verification: a second pending request of the same user is rejected');
+UPDATE auth.email_verification SET deleted_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003';
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '654321', 'eva.other@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003') = 2, 'email_verification: a new request is allowed once the previous one is soft-deleted');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_verification (user_id, verification_code, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '111111', NOW())$$, 'email_verification: a request without the new email is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET attempt_count = 6 WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: more than 5 attempts is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET new_email = 'a' WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: a new email shorter than 3 characters is rejected');
+SELECT pg_temp.rejects($$UPDATE auth.email_verification SET attempt_count = -1 WHERE user_id = '00000000-0000-0000-0000-000000000003'$$, 'email_verification: a negative attempt count is rejected');
+UPDATE auth.email_verification SET verified_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003' AND deleted_at IS NULL;
+INSERT INTO auth.email_verification (user_id, verification_code, new_email, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', '222222', 'eva.third@example.com', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.email_verification WHERE user_id = '00000000-0000-0000-0000-000000000003' AND verified_at IS NULL AND deleted_at IS NULL) = 1, 'email_verification: a verified request does not hold the unique slot of the pending one');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indisunique AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.uk_email_verification_user_id_pending')), 'email_verification: uk_email_verification_user_id_pending exists, is valid, unique and partial');
+
+-- Index of the email verification purge (V027, ADR-034): complete, so verified rows are served too.
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL AND NOT i.indisunique FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_email_verification_expires_at_complete')), 'email_verification: idx_email_verification_expires_at_complete exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid = 'auth.email_verification'::regclass) = 0, 'email_verification: no index is left invalid');
+
+-- Password reset (V028, V029, V030, HU-AUTH-006): one active request per user, and the purge index.
+INSERT INTO auth.password_reset (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', 'hash-1', NOW() + interval '15 minutes');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', 'hash-2', NOW() + interval '15 minutes')$$, 'password_reset: a second pending request of the same user is rejected');
+UPDATE auth.password_reset SET deleted_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003';
+INSERT INTO auth.password_reset (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', 'hash-2', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.password_reset WHERE user_id = '00000000-0000-0000-0000-000000000003') = 2, 'password_reset: a new request is allowed once the previous one is soft-deleted');
+UPDATE auth.password_reset SET used_at = NOW() WHERE user_id = '00000000-0000-0000-0000-000000000003' AND deleted_at IS NULL;
+INSERT INTO auth.password_reset (user_id, token_hash, expires_at) VALUES ('00000000-0000-0000-0000-000000000003', 'hash-3', NOW() + interval '15 minutes');
+SELECT pg_temp.expect((SELECT count(*) FROM auth.password_reset WHERE user_id = '00000000-0000-0000-0000-000000000003' AND used_at IS NULL AND deleted_at IS NULL) = 1, 'password_reset: a used request does not hold the unique slot of the pending one');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indisunique AND i.indpred IS NOT NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.uk_password_reset_user_id_pending')), 'password_reset: uk_password_reset_user_id_pending exists, is valid, unique and partial');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL AND NOT i.indisunique FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_password_reset_expires_at_complete')), 'password_reset: idx_password_reset_expires_at_complete exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid = 'auth.password_reset'::regclass) = 0, 'password_reset: no index is left invalid');
+
+-- Password reset idempotency key (V031 to V035, HU-AUTH-006): key of POST /forgot-password, linked to its token or to none.
+SELECT pg_temp.expect((SELECT count(*) FROM pg_constraint WHERE conrelid = 'auth.password_reset_idempotency_key'::regclass AND conname IN ('pk_password_reset_idempotency_key', 'chk_password_reset_idempotency_key_key_length', 'chk_password_reset_idempotency_key_request_hash_length', 'fk_password_reset_idempotency_key_password_reset')) = 4, 'password_reset_idempotency_key: primary key, the two checks and the foreign key exist with their names');
+SELECT pg_temp.expect((SELECT confdeltype FROM pg_constraint WHERE conname = 'fk_password_reset_idempotency_key_password_reset' AND conrelid = 'auth.password_reset_idempotency_key'::regclass) = 'n', 'password_reset_idempotency_key: the foreign key to password_reset sets null on delete');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_password_reset_idempotency_key_password_reset_id')), 'password_reset_idempotency_key: the foreign key column has a complete index');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_password_reset_idempotency_key_created_at')), 'password_reset_idempotency_key: idx_password_reset_idempotency_key_created_at exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid = 'auth.password_reset_idempotency_key'::regclass) = 0, 'password_reset_idempotency_key: no index is left invalid');
+INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES ('key-12345678', repeat('a', 64));
+SELECT pg_temp.expect((SELECT created_at IS NOT NULL AND password_reset_id IS NULL FROM auth.password_reset_idempotency_key WHERE key = 'key-12345678'), 'password_reset_idempotency_key: created_at is filled by default and the link may be null');
+INSERT INTO auth.password_reset_idempotency_key (key, request_hash, password_reset_id) SELECT 'key-87654321', repeat('b', 64), id FROM auth.password_reset WHERE token_hash = 'hash-3';
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES ('key-12345678', repeat('c', 64))$$, 'password_reset_idempotency_key: a duplicate key is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES (repeat('k', 7), repeat('c', 64))$$, 'password_reset_idempotency_key: a key of 7 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES (repeat('k', 129), repeat('c', 64))$$, 'password_reset_idempotency_key: a key of 129 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES ('key-11111111', repeat('c', 63))$$, 'password_reset_idempotency_key: a request hash of 63 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES ('key-11111111', repeat('c', 65))$$, 'password_reset_idempotency_key: a request hash of 65 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash) VALUES ('key-11111111', NULL)$$, 'password_reset_idempotency_key: a null request hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.password_reset_idempotency_key (key, request_hash, password_reset_id) VALUES ('key-11111111', repeat('c', 64), '00000000-0000-0000-0000-0000000000ff')$$, 'password_reset_idempotency_key: an unknown token is rejected');
+DELETE FROM auth.password_reset WHERE token_hash = 'hash-3';
+SELECT pg_temp.expect((SELECT count(*) FROM auth.password_reset_idempotency_key WHERE key = 'key-87654321' AND password_reset_id IS NULL) = 1, 'password_reset_idempotency_key: deleting the token keeps the key and clears the link');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.password_reset_idempotency_key', 'SELECT, INSERT, DELETE') AND has_table_privilege('auth_reader', 'auth.password_reset_idempotency_key', 'SELECT'), 'grants: auth_writer reads, inserts and deletes password_reset_idempotency_key and auth_reader reads it');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.password_reset_idempotency_key', 'UPDATE, TRUNCATE, REFERENCES, TRIGGER') AND NOT has_table_privilege('auth_reader', 'auth.password_reset_idempotency_key', 'INSERT, UPDATE, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.password_reset_idempotency_key', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.password_reset_idempotency_key', 'SELECT, DELETE'), 'grants: no other privilege or role on password_reset_idempotency_key');
+
+-- Email change idempotency key (V036 to V040, HU-AUTH-006): key of PATCH /me/email, linked to its pending request.
+SELECT pg_temp.expect((SELECT count(*) FROM pg_constraint WHERE conrelid = 'auth.email_change_idempotency_key'::regclass AND conname IN ('pk_email_change_idempotency_key', 'chk_email_change_idempotency_key_key_length', 'chk_email_change_idempotency_key_request_hash_length', 'fk_email_change_idempotency_key_email_verification')) = 4, 'email_change_idempotency_key: primary key, the two checks and the foreign key exist with their names');
+SELECT pg_temp.expect((SELECT confdeltype FROM pg_constraint WHERE conname = 'fk_email_change_idempotency_key_email_verification' AND conrelid = 'auth.email_change_idempotency_key'::regclass) = 'n', 'email_change_idempotency_key: the foreign key to email_verification sets null on delete');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_email_change_idempotency_key_email_verification_id')), 'email_change_idempotency_key: the foreign key column has a complete index');
+SELECT pg_temp.expect((SELECT i.indisvalid AND i.indpred IS NULL FROM pg_index i WHERE i.indexrelid = to_regclass('auth.idx_email_change_idempotency_key_created_at')), 'email_change_idempotency_key: idx_email_change_idempotency_key_created_at exists, is valid and complete');
+SELECT pg_temp.expect((SELECT count(*) FROM pg_index WHERE NOT indisvalid AND indrelid = 'auth.email_change_idempotency_key'::regclass) = 0, 'email_change_idempotency_key: no index is left invalid');
+INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES ('key-12345678', repeat('a', 64));
+SELECT pg_temp.expect((SELECT created_at IS NOT NULL AND email_verification_id IS NULL FROM auth.email_change_idempotency_key WHERE key = 'key-12345678'), 'email_change_idempotency_key: created_at is filled by default and the link may be null');
+INSERT INTO auth.email_change_idempotency_key (key, request_hash, email_verification_id) SELECT 'key-87654321', repeat('b', 64), id FROM auth.email_verification WHERE verification_code = '222222';
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES ('key-12345678', repeat('c', 64))$$, 'email_change_idempotency_key: a duplicate key is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES (repeat('k', 7), repeat('c', 64))$$, 'email_change_idempotency_key: a key of 7 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES (repeat('k', 129), repeat('c', 64))$$, 'email_change_idempotency_key: a key of 129 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES ('key-11111111', repeat('c', 63))$$, 'email_change_idempotency_key: a request hash of 63 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES ('key-11111111', repeat('c', 65))$$, 'email_change_idempotency_key: a request hash of 65 characters is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash) VALUES ('key-11111111', NULL)$$, 'email_change_idempotency_key: a null request hash is rejected');
+SELECT pg_temp.rejects($$INSERT INTO auth.email_change_idempotency_key (key, request_hash, email_verification_id) VALUES ('key-11111111', repeat('c', 64), '00000000-0000-0000-0000-0000000000ff')$$, 'email_change_idempotency_key: an unknown verification request is rejected');
+DELETE FROM auth.email_verification WHERE verification_code = '222222';
+SELECT pg_temp.expect((SELECT count(*) FROM auth.email_change_idempotency_key WHERE key = 'key-87654321' AND email_verification_id IS NULL) = 1, 'email_change_idempotency_key: deleting the request keeps the key and clears the link');
+SELECT pg_temp.expect(has_table_privilege('auth_writer', 'auth.email_change_idempotency_key', 'SELECT, INSERT, DELETE') AND has_table_privilege('auth_reader', 'auth.email_change_idempotency_key', 'SELECT'), 'grants: auth_writer reads, inserts and deletes email_change_idempotency_key and auth_reader reads it');
+SELECT pg_temp.expect(NOT has_table_privilege('auth_writer', 'auth.email_change_idempotency_key', 'UPDATE, TRUNCATE, REFERENCES, TRIGGER') AND NOT has_table_privilege('auth_reader', 'auth.email_change_idempotency_key', 'INSERT, UPDATE, DELETE') AND NOT has_table_privilege('auth_outbox_reader', 'auth.email_change_idempotency_key', 'SELECT, DELETE') AND NOT has_table_privilege('worker_app', 'auth.email_change_idempotency_key', 'SELECT, DELETE'), 'grants: no other privilege or role on email_change_idempotency_key');
+
+ROLLBACK;
