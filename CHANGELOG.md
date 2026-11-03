@@ -16,6 +16,12 @@ Everything below is in `develop`; it is promoted to `qa` and `main` only when it
 
 ### Added
 
+- Migrations V041 to V045 and their rollbacks U041 to U045, for the confirmation of a registration by email (csp-docs#282, norm 5.3.8): the table
+  `auth.registration_request` (one row per `POST /register`, with the `Idempotency-Key`, the hash of the request, the email and, only when the address
+  is free, the password hash, name, phone, address, token digest and expiry, all or none), a unique partial index of one pending request per email, an
+  index of the requests of an email by `created_at` for the limit per hour, a purge index on `created_at`, and the grants (`SELECT` for `auth_reader`,
+  `INSERT`, `UPDATE` and `DELETE` for `auth_writer`). CI checks the constraints, the indexes, the grants and that auth_writer deletes exactly eight tables.
+
 - Migrations V036 to V040 and their rollbacks U036 to U040, for the `Idempotency-Key` of `PATCH /me/email` (HU-AUTH-006, norm 5.3.8, ADR-034):
   the table `auth.email_change_idempotency_key` (`key` primary key of 8 to 128 characters, `request_hash` of exactly 64 characters, `created_at`,
   and a nullable `email_verification_id`, null once the purge deleted the pending request), its foreign key to `auth.email_verification` with
