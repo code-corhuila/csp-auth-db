@@ -8,6 +8,12 @@ Applied migrations are frozen: a change of the schema is always a new version.
 
 Everything below is in `develop`; it is promoted to `qa` and `main` only when it is ordered.
 
+### Fixed
+
+- The migration executor (`deploy/compose.yml`) sets `FLYWAY_CONNECT_RETRIES=6`: Flyway retries the connection for about a minute (the pause doubles from 1 second) instead
+  of failing at once when PostgreSQL is still starting. Found when running the `release/3.0.0` branches of the platform together with the profile `tooling` in one `up`:
+  the executor ran before the instance accepted connections and exited with code 1, and `csp-auth-api` answered `500` until it was run again by hand.
+
 ### Added
 
 - Migrations V036 to V040 and their rollbacks U036 to U040, for the `Idempotency-Key` of `PATCH /me/email` (HU-AUTH-006, norm 5.3.8, ADR-034):

@@ -56,7 +56,7 @@ never edited (Flyway refuses it with a checksum error). The history lives in `au
 
 ## Run the executor
 
-The instance belongs to `csp-infra-postgres`, which also composes this file. To run the executor alone, start that instance on the `platform` network and, from this repository:
+The instance belongs to `csp-infra-postgres`, which also composes this file. To run the executor alone, start that instance on the `platform` network and, from this repository (the executor retries its connection for about a minute, so it also works while the instance is still starting):
 
 ```bash
 cp .env.example .env     # and set the real values; never commit .env
