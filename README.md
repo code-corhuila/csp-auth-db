@@ -11,12 +11,12 @@ This repository is the **only owner of the `auth` schema** of the Cinesync Platf
 roles and migrations. `csp-auth-api` consumes the schema and never versions it. A migration of auth
 that lives anywhere else is a serious fault (Norma 5.2.1).
 
-The repository currently holds the **base scaffold only**: the layout, the schema, its seven tables, the seed of the
+The repository currently holds the **base scaffold only**: the layout, the schema, its tables, the seed of the
 roles `CLIENT` and `ADMIN`, the database roles and the rebuild verification. Functionality is added later, each change
 with its own migration and reversion.
 
 Tables (singular, schema `auth`): `app_user`, `role`, `user_role`, `refresh_token`, `email_verification`,
-`password_reset` and `outbox_event`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
+`password_reset`, `outbox_event`, `idempotency_key`, `password_reset_idempotency_key`, `email_change_idempotency_key` and `registration_request`. `app_user` is not called `user` because that is a reserved word in PostgreSQL.
 
 ## Stack
 
@@ -56,7 +56,7 @@ never edited (Flyway refuses it with a checksum error). The history lives in `au
 
 ## Run the executor
 
-The instance belongs to `csp-infra-postgres`, which also composes this file. To run the executor alone, start that instance on the `platform` network and, from this repository:
+The instance belongs to `csp-infra-postgres`, which also composes this file. To run the executor alone, start that instance on the `platform` network and, from this repository (the executor retries its connection for about a minute, so it also works while the instance is still starting):
 
 ```bash
 cp .env.example .env     # and set the real values; never commit .env
